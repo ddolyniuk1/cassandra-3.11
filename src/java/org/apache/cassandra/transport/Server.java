@@ -400,7 +400,7 @@ public class Server implements CassandraDaemon.Server
             this.encryptionOptions = encryptionOptions;
             try
             {
-                this.sslContext = SSLFactory.createSSLContext(encryptionOptions, encryptionOptions.require_client_auth);
+                this.sslContext = SSLFactory.getSSLContext(encryptionOptions, encryptionOptions.require_client_auth);
             }
             catch (IOException e)
             {

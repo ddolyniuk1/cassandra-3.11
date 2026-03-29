@@ -306,7 +306,7 @@ public class SimpleClient implements Closeable
 
         public SecureInitializer() throws IOException
         {
-            this.sslContext = SSLFactory.createSSLContext(encryptionOptions, true);
+            this.sslContext = SSLFactory.getSSLContext(encryptionOptions, true);
         }
 
         protected void initChannel(Channel channel) throws Exception

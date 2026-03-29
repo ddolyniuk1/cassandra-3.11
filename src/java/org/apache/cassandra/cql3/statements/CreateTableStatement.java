@@ -17,19 +17,17 @@
  */
 package org.apache.cassandra.cql3.statements;
 
-import java.nio.ByteBuffer;
-import java.util.*;
-import java.util.regex.Pattern;
-import java.util.stream.Collectors;
-
 import com.google.common.collect.HashMultiset;
 import com.google.common.collect.Multiset;
-import org.apache.commons.lang3.StringUtils;
-
 import org.apache.cassandra.auth.*;
-import org.apache.cassandra.config.*;
-import org.apache.cassandra.cql3.*;
-import org.apache.cassandra.db.*;
+import org.apache.cassandra.config.CFMetaData;
+import org.apache.cassandra.config.DatabaseDescriptor;
+import org.apache.cassandra.config.Schema;
+import org.apache.cassandra.config.SchemaConstants;
+import org.apache.cassandra.cql3.CFName;
+import org.apache.cassandra.cql3.CQL3Type;
+import org.apache.cassandra.cql3.ColumnIdentifier;
+import org.apache.cassandra.db.CompactTables;
 import org.apache.cassandra.db.marshal.*;
 import org.apache.cassandra.exceptions.*;
 import org.apache.cassandra.schema.KeyspaceMetadata;
@@ -39,10 +37,17 @@ import org.apache.cassandra.service.ClientState;
 import org.apache.cassandra.service.MigrationManager;
 import org.apache.cassandra.service.QueryState;
 import org.apache.cassandra.transport.Event;
+import org.apache.commons.lang3.StringUtils;
+
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+import java.util.*;
+import java.util.regex.Pattern;
 
 /** A {@code CREATE TABLE} parsed from a CQL query statement. */
 public class CreateTableStatement extends SchemaAlteringStatement
 {
+    
     private static final Pattern PATTERN_WORD_CHARS = Pattern.compile("\\w+");
 
     private List<AbstractType<?>> keyTypes;
@@ -219,7 +224,12 @@ public class CreateTableStatement extends SchemaAlteringStatement
 
             TableParams params = properties.properties.asNewTableParams();
 
-            CreateTableStatement stmt = new CreateTableStatement(cfName, params, ifNotExists, staticColumns, properties.properties.getId());
+            UUID tableId = properties.properties.getId();
+            if (tableId == null)
+                tableId = UUID.nameUUIDFromBytes(
+                        (keyspace() + "." + columnFamily()).getBytes(StandardCharsets.UTF_8)
+                );
+            CreateTableStatement stmt = new CreateTableStatement(cfName, params, ifNotExists, staticColumns, tableId);
 
             for (Map.Entry<ColumnIdentifier, CQL3Type.Raw> entry : definitions.entrySet())
             {
@@ -344,14 +354,8 @@ public class CreateTableStatement extends SchemaAlteringStatement
             // If we give a clustering order, we must explicitly do so for all aliases and in the order of the PK
             if (!properties.definedOrdering.isEmpty())
             {
-                List<ColumnIdentifier> nonClusterColumn = properties.definedOrdering.keySet().stream()
-                                                                                    .filter((id) -> !columnAliases.contains(id))
-                                                                                    .collect(Collectors.toList());
-
-                if (!nonClusterColumn.isEmpty())
-                {
-                    throw new InvalidRequestException("Only clustering key columns can be defined in CLUSTERING ORDER directive: " + nonClusterColumn + " are not clustering columns");
-                }
+                if (properties.definedOrdering.size() > columnAliases.size())
+                    throw new InvalidRequestException("Only clustering key columns can be defined in CLUSTERING ORDER directive");
 
                 int i = 0;
                 for (ColumnIdentifier id : properties.definedOrdering.keySet())

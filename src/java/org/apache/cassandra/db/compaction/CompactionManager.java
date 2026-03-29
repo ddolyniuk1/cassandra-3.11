@@ -457,9 +457,9 @@ public class CompactionManager implements CompactionManagerMBean
     {
         assert !cfStore.isIndex();
         Keyspace keyspace = cfStore.keyspace;
-        if (!StorageService.instance.getTokenMetadata().getPendingRanges(keyspace.getName(), FBUtilities.getBroadcastAddress()).isEmpty())
+        if (!StorageService.instance.isJoined())
         {
-            logger.info("Cleanup cannot run while node has pending ranges for keyspace {} table {}, wait for node addition/decommission to complete and try again", cfStore.keyspace.getName(), cfStore.getTableName());
+            logger.info("Cleanup cannot run before a node has joined the ring");
             return AllSSTableOpStatus.ABORTED;
         }
         // if local ranges is empty, it means no data should remain
@@ -512,35 +512,12 @@ public class CompactionManager implements CompactionManagerMBean
             @Override
             public Iterable<SSTableReader> filterSSTables(LifecycleTransaction transaction)
             {
-                List<SSTableReader> filteredSSTables = new ArrayList<>();
+                Iterable<SSTableReader> originals = transaction.originals();
                 if (cfStore.getCompactionStrategyManager().onlyPurgeRepairedTombstones())
-                {
-                    for (SSTableReader sstable : transaction.originals())
-                    {
-                        if (!sstable.isRepaired())
-                        {
-                            try
-                            {
-                                transaction.cancel(sstable);
-                            }
-                            catch (Throwable t)
-                            {
-                                logger.warn(String.format("Unable to cancel %s from transaction %s", sstable, transaction.opId()), t);
-                            }
-                        }
-                        else
-                        {
-                            filteredSSTables.add(sstable);
-                        }
-                    }
-                }
-                else
-                {
-                    filteredSSTables.addAll(transaction.originals());
-                }
-
-                filteredSSTables.sort(SSTableReader.maxTimestampAscending);
-                return filteredSSTables;
+                    originals = Iterables.filter(originals, SSTableReader::isRepaired);
+                List<SSTableReader> sortedSSTables = Lists.newArrayList(originals);
+                Collections.sort(sortedSSTables, SSTableReader.maxTimestampAscending);
+                return sortedSSTables;
             }
 
             @Override

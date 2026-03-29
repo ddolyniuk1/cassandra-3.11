@@ -19,9 +19,7 @@
 package org.apache.cassandra.service;
 
 import java.io.File;
-import java.util.Set;
 
-import com.google.common.collect.ImmutableSet;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -38,8 +36,6 @@ public class DefaultFSErrorHandler implements FSErrorHandler
 {
     private static final Logger logger = LoggerFactory.getLogger(DefaultFSErrorHandler.class);
 
-    private static final Set<Class<?>> exceptionsSkippingDataRemoval = ImmutableSet.of(OutOfMemoryError.class);
-
     @Override
     public void handleCorruptSSTable(CorruptSSTableException e)
     {
@@ -48,7 +44,6 @@ public class DefaultFSErrorHandler implements FSErrorHandler
 
         switch (DatabaseDescriptor.getDiskFailurePolicy())
         {
-            case die:
             case stop_paranoid:
                 // exception not logged here on purpose as it is already logged
                 logger.error("Stopping transports as disk_failure_policy is " + DatabaseDescriptor.getDiskFailurePolicy());
@@ -65,7 +60,6 @@ public class DefaultFSErrorHandler implements FSErrorHandler
 
         switch (DatabaseDescriptor.getDiskFailurePolicy())
         {
-            case die:
             case stop_paranoid:
             case stop:
                 // exception not logged here on purpose as it is already logged
@@ -75,7 +69,7 @@ public class DefaultFSErrorHandler implements FSErrorHandler
             case best_effort:
                 // for both read and write errors mark the path as unwritable.
                 DisallowedDirectories.maybeMarkUnwritable(e.path);
-                if (e instanceof FSReadError && shouldMaybeRemoveData(e))
+                if (e instanceof FSReadError)
                 {
                     File directory = DisallowedDirectories.maybeMarkUnreadable(e.path);
                     if (directory != null)
@@ -88,22 +82,6 @@ public class DefaultFSErrorHandler implements FSErrorHandler
             default:
                 throw new IllegalStateException();
         }
-    }
-
-    private boolean shouldMaybeRemoveData(Throwable error)
-    {
-        for (Throwable t = error; t != null; t = t.getCause())
-        {
-            for (Class<?> c : exceptionsSkippingDataRemoval)
-                if (c.isAssignableFrom(t.getClass()))
-                    return false;
-            for (Throwable s : t.getSuppressed())
-                for (Class<?> c : exceptionsSkippingDataRemoval)
-                    if (c.isAssignableFrom(s.getClass()))
-                        return false;
-        }
-
-        return true;
     }
 
     private static void handleStartupFSError(Throwable t)

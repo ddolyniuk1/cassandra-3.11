@@ -18,24 +18,10 @@
 package org.apache.cassandra.repair;
 
 import java.net.InetAddress;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.HashMap;
-import java.util.LinkedList;
-import java.util.List;
-import java.util.Map;
-import java.util.Queue;
-import java.util.concurrent.CancellationException;
-import java.util.concurrent.ExecutionException;
+import java.util.*;
 
 import com.google.common.annotations.VisibleForTesting;
-import com.google.common.util.concurrent.AbstractFuture;
-import com.google.common.util.concurrent.AsyncFunction;
-import com.google.common.util.concurrent.FutureCallback;
-import com.google.common.util.concurrent.Futures;
-import com.google.common.util.concurrent.ListenableFuture;
-import com.google.common.util.concurrent.ListeningExecutorService;
-import com.google.common.util.concurrent.UncheckedExecutionException;
+import com.google.common.util.concurrent.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -149,19 +135,7 @@ public class RepairJob extends AbstractFuture<RepairResult> implements Runnable
         }, taskExecutor);
 
         // Wait for validation to complete
-        try
-        {
-            syncResults.get();
-        }
-        catch (CancellationException | ExecutionException ignored)
-        {
-            // this is already handled in the listener
-        }
-        catch (InterruptedException e)
-        {
-            Thread.currentThread().interrupt();
-            throw new UncheckedExecutionException(e);
-        }
+        Futures.getUnchecked(validations);
     }
 
     @VisibleForTesting

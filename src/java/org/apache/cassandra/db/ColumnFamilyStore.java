@@ -189,6 +189,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
 
     private static final String SAMPLING_RESULTS_NAME = "SAMPLING_RESULTS";
     private static final CompositeType SAMPLING_RESULT;
+    private static final String SNAPSHOTTING_DESIRED_INDICATOR_FILE = "snapshot.edge";
 
     public static final String SNAPSHOT_TRUNCATE_PREFIX = "truncated";
     public static final String SNAPSHOT_DROP_PREFIX = "dropped";
@@ -578,10 +579,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
 
         latencyCalculator.cancel(false);
         compactionStrategyManager.shutdown();
-
-        // Do not remove truncation records for index CFs, given they have the same ID as their backing/base tables.
-        if (!metadata.isIndex())
-            SystemKeyspace.removeTruncationRecord(metadata.cfId);
+        SystemKeyspace.removeTruncationRecord(metadata.cfId);
 
         data.dropSSTables();
         LifecycleTransaction.waitForDeletions();
@@ -1852,8 +1850,29 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
      */
     public Set<SSTableReader> snapshotWithoutFlush(String snapshotName, Predicate<SSTableReader> predicate, boolean ephemeral)
     {
+        boolean shouldSnapshotColumnFamily = false;
+        for (Directories.DataDirectory dataDirectory : Directories.dataDirectories)
+        {
+            File snapshottingDesiredIndicatorFile = new File(dataDirectory.location, SNAPSHOTTING_DESIRED_INDICATOR_FILE);
+            if (snapshottingDesiredIndicatorFile.exists())
+            {
+                shouldSnapshotColumnFamily = true;
+
+                break;
+            }
+        }
+
+        if (!shouldSnapshotColumnFamily)
+        {
+            logger.info("Did not find 'snapshotting desired' file '{}' for '{}' in '{}', not snapshotting", SNAPSHOTTING_DESIRED_INDICATOR_FILE, name, keyspace);
+
+            return new HashSet<>();
+        }
+
+        Set<SSTableReader> readyToBeSnapshottedSSTables = new HashSet<>();
         Set<SSTableReader> snapshottedSSTables = new HashSet<>();
         final JSONArray filesJSONArr = new JSONArray();
+
         for (ColumnFamilyStore cfs : concatWithIndexes())
         {
             try (RefViewFragment currentView = cfs.selectAndReference(View.select(SSTableSet.CANONICAL, (x) -> predicate == null || predicate.apply(x))))
@@ -1861,14 +1880,29 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
                 for (SSTableReader ssTable : currentView.sstables)
                 {
                     File snapshotDirectory = Directories.getSnapshotDirectory(ssTable.descriptor, snapshotName);
-                    ssTable.createLinks(snapshotDirectory.getPath()); // hard links
-                    filesJSONArr.add(ssTable.descriptor.relativeFilenameFor(Component.DATA));
+                    String hardLinkManifestFileAbsolutePath = ssTable.createLinks(snapshotDirectory.getPath()); // hard links
+                    if (hardLinkManifestFileAbsolutePath == null || hardLinkManifestFileAbsolutePath.trim().isEmpty())
+                    {
+                        continue;
+                    }
 
-                    if (logger.isTraceEnabled())
-                        logger.trace("Snapshot for {} keyspace data file {} created in {}", keyspace, ssTable.getFilename(), snapshotDirectory);
-                    snapshottedSSTables.add(ssTable);
+                    readyToBeSnapshottedSSTables.add(ssTable);
                 }
             }
+        }
+
+        for (SSTableReader snapshottedSsTable : readyToBeSnapshottedSSTables)
+        {
+            filesJSONArr.add(snapshottedSsTable.descriptor.relativeFilenameFor(Component.DATA));
+
+            if (logger.isTraceEnabled())
+            {
+                File snapshotDirectory = Directories.getSnapshotDirectory(snapshottedSsTable.descriptor, snapshotName);
+
+                logger.trace("Snapshot for '{}' keyspace data file '{}' created in '{}'", keyspace, snapshottedSsTable.getFilename(), snapshotDirectory);
+            }
+
+            snapshottedSSTables.add(snapshottedSsTable);
         }
 
         writeSnapshotManifest(filesJSONArr, snapshotName);

@@ -17,7 +17,17 @@
  */
 package org.apache.cassandra.security;
 
-
+import com.google.common.base.Predicates;
+import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Iterables;
+import com.google.common.collect.Sets;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.apache.cassandra.config.EncryptionOptions;
+import org.apache.cassandra.io.util.FileUtils;
+ 
+import javax.net.ssl.*;
+import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.net.InetAddress;
@@ -28,37 +38,47 @@ import java.util.Arrays;
 import java.util.Date;
 import java.util.Enumeration;
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
-import javax.net.ssl.KeyManagerFactory;
-import javax.net.ssl.SSLContext;
-import javax.net.ssl.SSLParameters;
-import javax.net.ssl.SSLServerSocket;
-import javax.net.ssl.SSLSocket;
-import javax.net.ssl.TrustManager;
-import javax.net.ssl.TrustManagerFactory;
-
-import org.apache.cassandra.config.EncryptionOptions;
-import org.apache.cassandra.io.util.FileUtils;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-import com.google.common.base.Predicates;
-import com.google.common.collect.ImmutableSet;
-import com.google.common.collect.Iterables;
-import com.google.common.collect.Sets;
-
-/**
- * A Factory for providing and setting up Client and Server SSL wrapped
- * Socket and ServerSocket
- */
 public final class SSLFactory
 {
     private static final Logger logger = LoggerFactory.getLogger(SSLFactory.class);
     private static boolean checkedExpiry = false;
 
+    // Cache for SSL contexts
+    private static final ConcurrentHashMap<String, CachedSSLContext> sslContextCache = new ConcurrentHashMap<>();
+
+    // Hot reload configuration
+    private static final int DEFAULT_HOT_RELOAD_INTERVAL_SECONDS = 600; // 10 minutes
+    private static boolean hotReloadingInitialized = false;
+
+    // Cached SSL context with last modified timestamps
+    private static class CachedSSLContext {
+        final SSLContext context;
+        final long keystoreLastModified;
+        final long truststoreLastModified;
+        final EncryptionOptions options;
+
+        CachedSSLContext(SSLContext context, long keystoreLastModified, long truststoreLastModified, EncryptionOptions options) {
+            this.context = context;
+            this.keystoreLastModified = keystoreLastModified;
+            this.truststoreLastModified = truststoreLastModified;
+            this.options = options;
+        }
+
+        boolean isOutdated() {
+            File keystore = new File(options.keystore);
+            File truststore = new File(options.truststore);
+            return keystore.lastModified() > keystoreLastModified ||
+                    truststore.lastModified() > truststoreLastModified;
+        }
+    }
+
     public static SSLServerSocket getServerSocket(EncryptionOptions options, InetAddress address, int port) throws IOException
     {
-        SSLContext ctx = createSSLContext(options, true);
+        SSLContext ctx = getSSLContext(options, true);
         SSLServerSocket serverSocket = (SSLServerSocket)ctx.getServerSocketFactory().createServerSocket();
         try
         {
@@ -74,10 +94,9 @@ public final class SSLFactory
         }
     }
 
-    /** Create a socket and connect */
     public static SSLSocket getSocket(EncryptionOptions options, InetAddress address, int port, InetAddress localAddress, int localPort) throws IOException
     {
-        SSLContext ctx = createSSLContext(options, true);
+        SSLContext ctx = getSSLContext(options, true);
         SSLSocket socket = (SSLSocket) ctx.getSocketFactory().createSocket(address, port, localAddress, localPort);
         try
         {
@@ -94,7 +113,7 @@ public final class SSLFactory
     /** Create a socket and connect, using any local address */
     public static SSLSocket getSocket(EncryptionOptions options, InetAddress address, int port) throws IOException
     {
-        SSLContext ctx = createSSLContext(options, true);
+        SSLContext ctx = getSSLContext(options, true);
         SSLSocket socket = (SSLSocket) ctx.getSocketFactory().createSocket(address, port);
         try
         {
@@ -111,7 +130,7 @@ public final class SSLFactory
     /** Just create a socket */
     public static SSLSocket getSocket(EncryptionOptions options) throws IOException
     {
-        SSLContext ctx = createSSLContext(options, true);
+        SSLContext ctx = getSSLContext(options, true);
         SSLSocket socket = (SSLSocket) ctx.getSocketFactory().createSocket();
         try
         {
@@ -152,8 +171,83 @@ public final class SSLFactory
         socket.setEnabledCipherSuites(suites);
     }
 
+    public static synchronized void initHotReloading(ScheduledExecutorService executor)
+    {
+        if (hotReloadingInitialized)
+        {
+            logger.debug("SSL hot reloading is already initialized");
+            return;
+        }
+
+        if (executor == null)
+        {
+            throw new IllegalArgumentException("Executor service cannot be null");
+        }
+
+        executor.scheduleWithFixedDelay(() -> {
+            try
+            {
+                checkAndReloadCertificates(false);
+            }
+            catch (Exception e)
+            {
+                logger.error("Error during scheduled SSL certificate check", e);
+            }
+        }, DEFAULT_HOT_RELOAD_INTERVAL_SECONDS, DEFAULT_HOT_RELOAD_INTERVAL_SECONDS, TimeUnit.SECONDS);
+
+        hotReloadingInitialized = true;
+        logger.debug("SSL certificate hot reloading initialized with {} second interval",
+                DEFAULT_HOT_RELOAD_INTERVAL_SECONDS);
+    }
+
+    public static void forceCheckCertificates() {
+        try {
+            checkAndReloadCertificates(true);
+        } catch (Exception e) {
+            logger.error("Error during forced SSL certificate check", e);
+        }
+    }
+
+    private static void checkAndReloadCertificates(boolean force) {
+        sslContextCache.forEach((key, cached) -> {
+            if (force || cached.isOutdated()) {
+                try {
+                    logger.debug("Reloading SSL context for {}", key);
+                    SSLContext newContext = getSSLContext(cached.options, true);
+                    sslContextCache.put(key, new CachedSSLContext(
+                            newContext,
+                            new File(cached.options.keystore).lastModified(),
+                            new File(cached.options.truststore).lastModified(),
+                            cached.options
+                    ));
+                } catch (Exception e) {
+                    logger.error("Failed to reload SSL context for {}", key, e);
+                }
+            }
+        });
+    }
+
+    public static SSLContext getSSLContext(EncryptionOptions options, boolean buildTruststore) throws IOException
+    {
+        String cacheKey = options.keystore + "|" + options.truststore;
+        CachedSSLContext cached = sslContextCache.get(cacheKey);
+
+        if (cached == null || cached.isOutdated()) {
+            SSLContext context = createSSLContext(options, buildTruststore);
+            cached = new CachedSSLContext(
+                    context,
+                    new File(options.keystore).lastModified(),
+                    new File(options.truststore).lastModified(),
+                    options
+            );
+            sslContextCache.put(cacheKey, cached);
+        }
+
+        return cached.context;
+    }
+
     @SuppressWarnings("resource")
-    public static SSLContext createSSLContext(EncryptionOptions options, boolean buildTruststore) throws IOException
+    private static SSLContext createSSLContext(EncryptionOptions options, boolean buildTruststore) throws IOException
     {
         FileInputStream tsf = null;
         FileInputStream ksf = null;

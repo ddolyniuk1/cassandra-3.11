@@ -194,14 +194,10 @@ public abstract class ColumnSubselection implements Comparable<ColumnSubselectio
             {
                 // If we don't find the definition, it could be we have data for a dropped column, and we shouldn't
                 // fail deserialization because of that. So we grab a "fake" ColumnDefinition that ensure proper
-                // deserialization. The column will be ignored later on anyway.
+                // deserialization. The column will be ignore later on anyway.
                 column = metadata.getDroppedColumnDefinition(name);
                 if (column == null)
-                {
-                    String errorMsg = String.format("Unknown column %s in table %s.%s during deserialization",
-                                                    UTF8Type.instance.getString(name), metadata.ksName, metadata.cfName);
-                    throw new RuntimeException(errorMsg);
-                }
+                    throw new RuntimeException("Unknown column " + UTF8Type.instance.getString(name) + " during deserialization");
             }
 
             Kind kind = Kind.values()[in.readUnsignedByte()];

@@ -29,6 +29,7 @@ import java.util.stream.Stream;
 
 import javax.annotation.Nullable;
 
+import com.clearspring.analytics.stream.cardinality.AdaptiveCounting;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableList;
@@ -39,6 +40,7 @@ import com.google.common.util.concurrent.ListenableFutureTask;
 import com.google.common.util.concurrent.Uninterruptibles;
 
 import io.netty.util.concurrent.FastThreadLocal;
+import org.apache.cassandra.config.AccessControlConfig;
 import org.apache.cassandra.utils.ExecutorUtils;
 import org.apache.cassandra.utils.MBeanWrapper;
 import org.apache.cassandra.utils.NoSpamLogger;
@@ -106,7 +108,7 @@ public class Gossiper implements IFailureDetectionEventListener, GossiperMBean
 
     private volatile ScheduledFuture<?> scheduledGossipTask;
     private static final ReentrantLock taskLock = new ReentrantLock();
-    public final static int intervalInMillis = 1000;
+    public static int intervalInMillis = AccessControlConfig.Loader.getCurrentConfig().gossip_interval_ms;
     public final static int QUARANTINE_DELAY = StorageService.RING_DELAY * 2;
     private static final Logger logger = LoggerFactory.getLogger(Gossiper.class);
     private static final NoSpamLogger noSpamLogger = NoSpamLogger.getLogger(logger, 15L, TimeUnit.MINUTES);
@@ -597,16 +599,17 @@ public class Gossiper implements IFailureDetectionEventListener, GossiperMBean
 
         // local epstate will be part of endpointStateMap
         List<InetAddress> endpoints = new ArrayList<InetAddress>(endpointStateMap.keySet());
-        Collections.shuffle(endpoints, random);
+        Collections.shuffle(endpoints, random); 
         for (InetAddress endpoint : endpoints)
         {
             epState = endpointStateMap.get(endpoint);
+         
             if (epState != null)
             {
                 generation = epState.getHeartBeatState().getGeneration();
                 maxVersion = getMaxEndpointStateVersion(epState);
             }
-            gDigests.add(new GossipDigest(endpoint, generation, maxVersion));
+            gDigests.add(new GossipDigest(endpoint, generation, maxVersion)); 
         }
 
         if (logger.isTraceEnabled())
@@ -758,7 +761,7 @@ public class Gossiper implements IFailureDetectionEventListener, GossiperMBean
     private boolean sendGossip(MessageOut<GossipDigestSyn> message, Set<InetAddress> epSet)
     {
         List<InetAddress> endpoints = ImmutableList.copyOf(epSet);
-
+        
         int size = endpoints.size();
         if (size < 1)
             return false;
@@ -1207,7 +1210,7 @@ public class Gossiper implements IFailureDetectionEventListener, GossiperMBean
             for (IEndpointStateChangeSubscriber subscriber : subscribers)
                 subscriber.onRestart(ep, localEpState);
         }
-
+ 
         if (!isDeadState(epState))
             markAlive(ep, epState);
         else
@@ -1314,7 +1317,7 @@ public class Gossiper implements IFailureDetectionEventListener, GossiperMBean
                     }
                     else if (logger.isTraceEnabled())
                             logger.trace("Ignoring remote version {} <= {} for {}", remoteMaxVersion, localMaxVersion, ep);
-
+ 
                     if (!localEpStatePtr.isAlive() && !isDeadState(localEpStatePtr)) // unless of course, it was dead
                         markAlive(ep, localEpStatePtr);
                 }
@@ -1862,9 +1865,9 @@ public class Gossiper implements IFailureDetectionEventListener, GossiperMBean
         {
             return;
         }
-        final int GOSSIP_SETTLE_MIN_WAIT_MS = Integer.getInteger("cassandra.gossip_settle_min_wait_ms", 5000);
-        final int GOSSIP_SETTLE_POLL_INTERVAL_MS = Integer.getInteger("cassandra.gossip_settle_interval_ms", 1000);
-        final int GOSSIP_SETTLE_POLL_SUCCESSES_REQUIRED = Integer.getInteger("cassandra.gossip_settle_poll_success_required", 3);
+        final int GOSSIP_SETTLE_MIN_WAIT_MS = 5000;
+        final int GOSSIP_SETTLE_POLL_INTERVAL_MS = 1000;
+        final int GOSSIP_SETTLE_POLL_SUCCESSES_REQUIRED = 3;
 
         logger.info("Waiting for gossip to settle...");
         Uninterruptibles.sleepUninterruptibly(GOSSIP_SETTLE_MIN_WAIT_MS, TimeUnit.MILLISECONDS);
@@ -1899,7 +1902,7 @@ public class Gossiper implements IFailureDetectionEventListener, GossiperMBean
         else
             logger.info("No gossip backlog; proceeding");
     }
-
+ 
     @VisibleForTesting
     public void stopShutdownAndWait(long timeout, TimeUnit unit) throws InterruptedException, TimeoutException
     {

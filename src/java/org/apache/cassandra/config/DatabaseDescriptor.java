@@ -17,30 +17,11 @@
  */
 package org.apache.cassandra.config;
 
-import java.io.File;
-import java.io.IOException;
-import java.lang.reflect.Constructor;
-import java.net.*;
-import java.nio.file.FileStore;
-import java.nio.file.NoSuchFileException;
-import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.util.*;
-import java.util.function.Supplier;
-
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.primitives.Ints;
 import com.google.common.primitives.Longs;
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-import org.apache.cassandra.auth.AuthConfig;
-import org.apache.cassandra.auth.IAuthenticator;
-import org.apache.cassandra.auth.IAuthorizer;
-import org.apache.cassandra.auth.IInternodeAuthenticator;
-import org.apache.cassandra.auth.IRoleManager;
+import org.apache.cassandra.auth.*;
 import org.apache.cassandra.config.Config.CommitLogSync;
 import org.apache.cassandra.config.Config.RequestSchedulerId;
 import org.apache.cassandra.dht.IPartitioner;
@@ -64,8 +45,21 @@ import org.apache.cassandra.thrift.ThriftServer.ThriftServerType;
 import org.apache.cassandra.transport.ProtocolVersion;
 import org.apache.cassandra.transport.ProtocolVersionLimit;
 import org.apache.cassandra.utils.FBUtilities;
-
 import org.apache.commons.lang3.StringUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.File;
+import java.io.IOException;
+import java.lang.reflect.Constructor;
+import java.net.*;
+import java.nio.file.FileStore;
+import java.nio.file.NoSuchFileException;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.*;
+import java.util.function.Supplier;
+import java.util.stream.Collectors;
 
 import static org.apache.cassandra.io.util.FileUtils.ONE_GB;
 
@@ -131,6 +125,7 @@ public class DatabaseDescriptor
 
     // turns some warnings into exceptions for testing
     private static final boolean strictRuntimeChecks = Boolean.getBoolean("cassandra.strict.runtime.checks");
+    private static HashSet<String> bifrost_monitored_keyspaces_csv = null;
 
     public static void daemonInitialization() throws ConfigurationException
     {
@@ -2609,7 +2604,7 @@ public class DatabaseDescriptor
     {
         return conf.cdc_raw_directory;
     }
-
+    public static String getBifrostNodeId() { return conf.bifrost_node_id; }
     public static int getCDCSpaceInMB()
     {
         return conf.cdc_total_space_in_mb;
@@ -2710,5 +2705,23 @@ public class DatabaseDescriptor
             logger.info("Setting force_new_prepared_statement_behaviour to {}", value);
             conf.force_new_prepared_statement_behaviour = value;
         }
+    } 
+    
+    public static boolean isBifrostEnabled()
+    {
+        return conf.bifrost_enabled;
+    }
+ 
+    public static boolean isBifrostMonitoredKeyspace(String keyspace) {
+        if(bifrost_monitored_keyspaces_csv == null) { 
+            bifrost_monitored_keyspaces_csv = Arrays.stream(conf.bifrost_monitored_keyspaces_csv.split(","))
+                    .map(String::trim)
+                    .collect(Collectors.toCollection(HashSet::new));
+        }
+        return bifrost_monitored_keyspaces_csv.contains(keyspace);
+    }
+    public static void setBifrostEnabled(boolean enabled)
+    {
+        conf.bifrost_enabled = enabled;
     }
 }

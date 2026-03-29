@@ -17,21 +17,16 @@
  */
 package org.apache.cassandra.config;
 
-import java.lang.reflect.Field;
-import java.lang.reflect.Modifier;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.TreeMap;
-import java.util.concurrent.TimeUnit;
-import java.util.function.Supplier;
-
 import com.google.common.base.Joiner;
 import com.google.common.collect.Sets;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
+import java.util.*;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 
 /**
  * A class that contains configuration properties for the cassandra node it runs within.
@@ -415,6 +410,11 @@ public class Config
         return isClientMode;
     }
 
+    public Boolean bifrost_enabled = false;
+
+    public String bifrost_monitored_keyspaces_csv = "identity_service_keyspace";
+
+    public String bifrost_node_id = "";
     /**
      * If true, when rows with duplicate clustering keys are detected during a read or compaction
      * a snapshot will be taken. In the read case, each a snapshot request will be issued to each

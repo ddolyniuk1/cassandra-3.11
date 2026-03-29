@@ -254,7 +254,7 @@ public class BulkLoader
         SSLContext sslContext;
         try
         {
-            sslContext = SSLFactory.createSSLContext(clientEncryptionOptions, true);
+            sslContext = SSLFactory.getSSLContext(clientEncryptionOptions, true);
         }
         catch (IOException e)
         {

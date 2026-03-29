@@ -17,6 +17,16 @@
  */
 package org.apache.cassandra.net;
 
+import org.apache.cassandra.concurrent.Stage;
+import org.apache.cassandra.config.AccessControlConfig;
+import org.apache.cassandra.config.Config;
+import org.apache.cassandra.config.DatabaseDescriptor;
+import org.apache.cassandra.db.SystemKeyspace;
+import org.apache.cassandra.metrics.ConnectionMetrics;
+import org.apache.cassandra.security.SSLFactory;
+import org.apache.cassandra.utils.FBUtilities;
+
+import java.beans.PropertyChangeListener;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -24,14 +34,6 @@ import java.net.Socket;
 import java.nio.channels.SocketChannel;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
-
-import org.apache.cassandra.concurrent.Stage;
-import org.apache.cassandra.config.Config;
-import org.apache.cassandra.config.DatabaseDescriptor;
-import org.apache.cassandra.db.SystemKeyspace;
-import org.apache.cassandra.metrics.ConnectionMetrics;
-import org.apache.cassandra.security.SSLFactory;
-import org.apache.cassandra.utils.FBUtilities;
 
 public class OutboundTcpConnectionPool
 {
@@ -44,6 +46,7 @@ public class OutboundTcpConnectionPool
     public final OutboundTcpConnection smallMessages;
     public final OutboundTcpConnection largeMessages;
     public final OutboundTcpConnection gossipMessages;
+    private final PropertyChangeListener accessControlPropertyChangeListener;
 
     // pointer to the reset Address.
     private InetAddress resetEndpoint;
@@ -51,6 +54,7 @@ public class OutboundTcpConnectionPool
 
     // back-pressure state linked to this connection:
     private final BackPressureState backPressureState;
+    private boolean addedEventListener = false;
 
     OutboundTcpConnectionPool(InetAddress remoteEp, BackPressureState backPressureState)
     {
@@ -63,6 +67,13 @@ public class OutboundTcpConnectionPool
         gossipMessages = new OutboundTcpConnection(this, "Gossip");
 
         this.backPressureState = backPressureState;
+        
+        accessControlPropertyChangeListener = evt -> {
+            AccessControlConfig config = AccessControlConfig.Loader.getCurrentConfig();
+            if (!config.isAddressAccessible(remoteEp)) {
+                reset();
+            }
+        };
     }
 
     /**
@@ -163,6 +174,11 @@ public class OutboundTcpConnectionPool
         metrics = new ConnectionMetrics(id, this);
 
         started.countDown();
+        
+        if(!addedEventListener) {
+            addedEventListener = true;
+            AccessControlConfig.Loader.addPropertyChangeListener(accessControlPropertyChangeListener);
+        }
     }
 
     public void waitForStarted()
@@ -196,5 +212,10 @@ public class OutboundTcpConnectionPool
             gossipMessages.closeSocket(true);
 
         metrics.release();
+
+        if(addedEventListener) {
+            addedEventListener = false;
+            AccessControlConfig.Loader.removePropertyChangeListener(accessControlPropertyChangeListener);
+        }
     }
 }

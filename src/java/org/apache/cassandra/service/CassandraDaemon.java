@@ -17,25 +17,6 @@
  */
 package org.apache.cassandra.service;
 
-import java.io.File;
-import java.io.IOException;
-import java.lang.management.ManagementFactory;
-import java.lang.management.MemoryPoolMXBean;
-import java.net.InetAddress;
-import java.net.URL;
-import java.net.UnknownHostException;
-import java.util.List;
-import java.util.concurrent.TimeUnit;
-import javax.management.ObjectName;
-import javax.management.StandardMBean;
-import javax.management.remote.JMXConnectorServer;
-
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.util.concurrent.Futures;
-import com.google.common.util.concurrent.ListenableFuture;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import com.addthis.metrics3.reporter.config.ReporterConfig;
 import com.codahale.metrics.Meter;
 import com.codahale.metrics.MetricRegistryListener;
@@ -44,6 +25,9 @@ import com.codahale.metrics.jvm.BufferPoolMetricSet;
 import com.codahale.metrics.jvm.FileDescriptorRatioGauge;
 import com.codahale.metrics.jvm.GarbageCollectorMetricSet;
 import com.codahale.metrics.jvm.MemoryUsageGaugeSet;
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.util.concurrent.Futures;
+import com.google.common.util.concurrent.ListenableFuture;
 import org.apache.cassandra.batchlog.LegacyBatchlogMigrator;
 import org.apache.cassandra.concurrent.ScheduledExecutors;
 import org.apache.cassandra.config.CFMetaData;
@@ -51,11 +35,7 @@ import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.config.SchemaConstants;
 import org.apache.cassandra.cql3.QueryProcessor;
-import org.apache.cassandra.db.ColumnFamilyStore;
-import org.apache.cassandra.db.Keyspace;
-import org.apache.cassandra.db.SizeEstimatesRecorder;
-import org.apache.cassandra.db.SystemKeyspace;
-import org.apache.cassandra.db.WindowsFailedSnapshotTracker;
+import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.commitlog.CommitLog;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.exceptions.StartupException;
@@ -69,16 +49,29 @@ import org.apache.cassandra.metrics.CassandraMetricsRegistry;
 import org.apache.cassandra.metrics.DefaultNameFactory;
 import org.apache.cassandra.metrics.StorageMetrics;
 import org.apache.cassandra.schema.LegacySchemaMigrator;
+import org.apache.cassandra.security.SSLFactory;
 import org.apache.cassandra.security.ThreadAwareSecurityManager;
+import org.apache.cassandra.threesi.bifrost.facades.BifrostProducerFacade;
+import org.apache.cassandra.threesi.bifrost.services.BifrostImporterService;
+import org.apache.cassandra.threesi.bifrost.services.CommitLogWatcherService;
 import org.apache.cassandra.thrift.ThriftServer;
 import org.apache.cassandra.tracing.Tracing;
-import org.apache.cassandra.utils.FBUtilities;
-import org.apache.cassandra.utils.JMXServerUtils;
-import org.apache.cassandra.utils.JVMStabilityInspector;
-import org.apache.cassandra.utils.MBeanWrapper;
-import org.apache.cassandra.utils.Mx4jTool;
-import org.apache.cassandra.utils.NativeLibrary;
-import org.apache.cassandra.utils.WindowsTimer;
+import org.apache.cassandra.utils.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import javax.management.ObjectName;
+import javax.management.StandardMBean;
+import javax.management.remote.JMXConnectorServer;
+import java.io.File;
+import java.io.IOException;
+import java.lang.management.ManagementFactory;
+import java.lang.management.MemoryPoolMXBean;
+import java.net.InetAddress;
+import java.net.URL;
+import java.net.UnknownHostException;
+import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 /**
  * The <code>CassandraDaemon</code> is an abstraction for a Cassandra daemon
@@ -194,7 +187,7 @@ public class CassandraDaemon
      * Subclasses should override this to finish the job (listening on ports, etc.)
      */
     protected void setup()
-    {
+    {  
         FileUtils.setFSErrorHandler(new DefaultFSErrorHandler());
 
         // Delete any failed snapshot deletions on Windows - see CASSANDRA-9658
@@ -434,12 +427,25 @@ public class CassandraDaemon
         // schedule periodic background compaction task submission. this is simply a backstop against compactions stalling
         // due to scheduling errors or race conditions
         ScheduledExecutors.optionalTasks.scheduleWithFixedDelay(ColumnFamilyStore.getBackgroundCompactionTaskSubmitter(), 5, 1, TimeUnit.MINUTES);
-
+        initializeSSLHotReloading();
         initializeClientTransports();
 
         completeSetup();
     }
 
+    private void initializeSSLHotReloading()
+    {  
+        try
+        {
+            SSLFactory.initHotReloading(ScheduledExecutors.scheduledTasks);
+            logger.info("SSL certificate hot reloading has been initialized");
+        }
+        catch (Exception e)
+        {
+            logger.error("Failed to initialize SSL certificate hot reloading", e); 
+        }
+    }
+    
     public synchronized void initializeClientTransports()
     {
         // Thrift
@@ -534,6 +540,18 @@ public class CassandraDaemon
         // when bootstrap has not completed.
         try
         {
+            BifrostImporterService.getInstance().register();
+
+            BifrostProducerFacade.getInstance().start();
+//            CommitLogWatcherService.getInstance().start();
+        }
+        catch (Exception e)
+        {
+            logger.error("Failed to start Data Bridge", e);
+        }
+        
+        try
+        {
             validateTransportsCanStart();
         }
         catch (IllegalStateException isx)
@@ -550,7 +568,10 @@ public class CassandraDaemon
     {
         String nativeFlag = System.getProperty("cassandra.start_native_transport");
         if ((nativeFlag != null && Boolean.parseBoolean(nativeFlag)) || (nativeFlag == null && DatabaseDescriptor.startNativeTransport()))
+        {
             startNativeTransport();
+            StorageService.instance.setRpcReady(true);
+        }
         else
             logger.info("Not starting native transport as requested. Use JMX (StorageService->startNativeTransport()) or nodetool (enablebinary) to start it");
 
@@ -574,6 +595,15 @@ public class CassandraDaemon
         destroyClientTransports();
         StorageService.instance.setRpcReady(false);
 
+        try
+        {
+            CommitLogWatcherService.getInstance().stop();
+        }
+        catch (Exception e)
+        {
+            logger.error("Failed to stop Data Bridge", e);
+        }
+        
         // On windows, we need to stop the entire system as prunsrv doesn't have the jsvc hooks
         // We rely on the shutdown hook to drain the node
         if (FBUtilities.isWindows)
@@ -710,15 +740,7 @@ public class CassandraDaemon
         if (nativeTransportService == null)
             throw new IllegalStateException("setup() must be called first for CassandraDaemon");
 
-        // this iterates over a collection of servers and returns true if one of them is started
-        boolean alreadyRunning = nativeTransportService.isRunning();
-
-        // this might in practice start all servers which are not started yet
         nativeTransportService.start();
-
-        // interact with gossip only in case if no server was started before to signal they are started now
-        if (!alreadyRunning)
-            StorageService.instance.setRpcReady(true);
     }
 
     public void stopNativeTransport()

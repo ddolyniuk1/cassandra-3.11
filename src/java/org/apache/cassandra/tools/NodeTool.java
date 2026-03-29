@@ -17,24 +17,20 @@
  */
 package org.apache.cassandra.tools;
 
+import com.google.common.base.Joiner;
+import com.google.common.base.Throwables;
+import com.google.common.collect.Maps;
+import io.airlift.command.*;
+import org.apache.cassandra.locator.EndpointSnitchInfoMBean;
+import org.apache.cassandra.tools.nodetool.*;
+import org.apache.cassandra.utils.FBUtilities;
+
 import java.io.*;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.Map.Entry;
-import java.util.Scanner;
-import java.util.SortedMap;
-
-import com.google.common.base.Joiner;
-import com.google.common.base.Throwables;
-import com.google.common.collect.*;
-
-import io.airlift.command.*;
-
-import org.apache.cassandra.locator.EndpointSnitchInfoMBean;
-import org.apache.cassandra.tools.nodetool.*;
-import org.apache.cassandra.utils.FBUtilities;
 
 import static com.google.common.base.Throwables.getStackTraceAsString;
 import static com.google.common.collect.Iterables.toArray;
@@ -86,6 +82,7 @@ public class NodeTool
                 CompactionStats.class,
                 CompactionHistory.class,
                 Decommission.class,
+                FlushCDC.class,
                 DescribeCluster.class,
                 DisableBinary.class,
                 EnableBinary.class,
@@ -145,6 +142,7 @@ public class NodeTool
                 DisableBackup.class,
                 ResetLocalSchema.class,
                 ReloadLocalSchema.class,
+                ReloadSslCertificates.class,
                 ReloadTriggers.class,
                 SetCacheKeysToSave.class,
                 DisableThrift.class,
@@ -160,7 +158,8 @@ public class NodeTool
                 FailureDetectorInfo.class,
                 RefreshSizeEstimates.class,
                 RelocateSSTables.class,
-                ViewBuildStatus.class
+                ViewBuildStatus.class,
+                BifrostImportMutations.class
         );
 
         Cli.CliBuilder<NodeToolCmdRunnable> builder = Cli.builder("nodetool");

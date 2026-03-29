@@ -18,26 +18,29 @@
 
 package org.apache.cassandra.db.commitlog;
 
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.util.concurrent.RateLimiter;
+import org.apache.cassandra.config.DatabaseDescriptor;
+import org.apache.cassandra.db.ColumnFamilyStore;
+import org.apache.cassandra.db.ConsistencyLevel;
+import org.apache.cassandra.db.Mutation;
+import org.apache.cassandra.db.WriteType;
+import org.apache.cassandra.db.commitlog.CommitLogSegment.CDCState;
+import org.apache.cassandra.exceptions.WriteTimeoutException;
+import org.apache.cassandra.io.util.FileUtils;
+import org.apache.cassandra.utils.DirectorySizeCalculator;
+import org.apache.cassandra.utils.NoSpamLogger;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.util.UUID;
 import java.util.concurrent.*;
-
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.util.concurrent.RateLimiter;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-import org.apache.cassandra.config.DatabaseDescriptor;
-import org.apache.cassandra.db.*;
-import org.apache.cassandra.db.commitlog.CommitLogSegment.CDCState;
-import org.apache.cassandra.exceptions.WriteTimeoutException;
-import org.apache.cassandra.io.util.FileUtils;
-import org.apache.cassandra.utils.DirectorySizeCalculator;
-import org.apache.cassandra.utils.NoSpamLogger;
 
 public class CommitLogSegmentManagerCDC extends AbstractCommitLogSegmentManager
 {
@@ -56,7 +59,34 @@ public class CommitLogSegmentManagerCDC extends AbstractCommitLogSegmentManager
         cdcSizeTracker.start();
         super.start();
     }
+    /**
+     * Forces the current allocating segment to rotate and moves all
+     * eligible CDC segments to cdc_raw immediately.
+     */
+    public void forceCDCSegmentRotation()
+    {
+        // force rotation of the current allocating segment so it becomes
+        // eligible for discard
+        advanceAllocatingFrom(allocatingFrom());
 
+        // flush all CFs that have dirty data in any active segment
+        // so segments can be discarded
+        for (CommitLogSegment segment : getActiveSegments())
+        {
+            for (UUID cfId : segment.getDirtyCFIDs())
+            {
+                ColumnFamilyStore cfs = ColumnFamilyStore.getIfExists(cfId);
+                if (cfs != null)
+                    cfs.forceBlockingFlush();
+            }
+        }
+
+        // segments whose dirty CFs are now all flushed will be
+        // discarded by the normal segment management thread, which
+        // in CommitLogSegmentManagerCDC moves them to cdc_raw.
+        // wake the management thread to process immediately
+        wakeManager();
+    }
     public void discard(CommitLogSegment segment, boolean delete)
     {
         segment.close();

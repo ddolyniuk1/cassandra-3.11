@@ -17,6 +17,54 @@
  */
 package org.apache.cassandra.service;
 
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Predicate;
+import com.google.common.cache.CacheLoader;
+import com.google.common.collect.*;
+import com.google.common.primitives.Ints;
+import com.google.common.util.concurrent.Uninterruptibles;
+import org.apache.cassandra.batchlog.Batch;
+import org.apache.cassandra.batchlog.BatchlogManager;
+import org.apache.cassandra.batchlog.LegacyBatchlogMigrator;
+import org.apache.cassandra.concurrent.Stage;
+import org.apache.cassandra.concurrent.StageManager;
+import org.apache.cassandra.config.*;
+import org.apache.cassandra.db.*;
+import org.apache.cassandra.db.filter.DataLimits;
+import org.apache.cassandra.db.filter.TombstoneOverwhelmingException;
+import org.apache.cassandra.db.partitions.*;
+import org.apache.cassandra.db.rows.RowIterator;
+import org.apache.cassandra.db.view.ViewUtils;
+import org.apache.cassandra.dht.AbstractBounds;
+import org.apache.cassandra.dht.Bounds;
+import org.apache.cassandra.dht.RingPosition;
+import org.apache.cassandra.dht.Token;
+import org.apache.cassandra.exceptions.*;
+import org.apache.cassandra.gms.FailureDetector;
+import org.apache.cassandra.gms.Gossiper;
+import org.apache.cassandra.hints.Hint;
+import org.apache.cassandra.hints.HintsService;
+import org.apache.cassandra.index.Index;
+import org.apache.cassandra.io.util.DataOutputBuffer;
+import org.apache.cassandra.locator.AbstractReplicationStrategy;
+import org.apache.cassandra.locator.IEndpointSnitch;
+import org.apache.cassandra.locator.LocalStrategy;
+import org.apache.cassandra.locator.TokenMetadata;
+import org.apache.cassandra.metrics.*;
+import org.apache.cassandra.net.*;
+import org.apache.cassandra.net.MessagingService.Verb;
+import org.apache.cassandra.service.paxos.Commit;
+import org.apache.cassandra.service.paxos.PaxosState;
+import org.apache.cassandra.service.paxos.PrepareCallback;
+import org.apache.cassandra.service.paxos.ProposeCallback;
+import org.apache.cassandra.tracing.Tracing;
+import org.apache.cassandra.triggers.TriggerExecutor;
+import org.apache.cassandra.utils.AbstractIterator;
+import org.apache.cassandra.utils.*;
+import org.apache.commons.lang3.StringUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.io.IOException;
 import java.net.InetAddress;
 import java.nio.ByteBuffer;
@@ -25,54 +73,7 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
-
-import com.google.common.base.Predicate;
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.cache.CacheLoader;
-import com.google.common.collect.*;
-import com.google.common.primitives.Ints;
-import com.google.common.util.concurrent.Uninterruptibles;
-
-import org.apache.commons.lang3.StringUtils;
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-import org.apache.cassandra.batchlog.Batch;
-import org.apache.cassandra.batchlog.BatchlogManager;
-import org.apache.cassandra.batchlog.LegacyBatchlogMigrator;
-import org.apache.cassandra.concurrent.Stage;
-import org.apache.cassandra.concurrent.StageManager;
-import org.apache.cassandra.config.CFMetaData;
-import org.apache.cassandra.config.DatabaseDescriptor;
-import org.apache.cassandra.config.Schema;
-import org.apache.cassandra.config.SchemaConstants;
-import org.apache.cassandra.db.*;
-import org.apache.cassandra.db.filter.DataLimits;
-import org.apache.cassandra.db.filter.TombstoneOverwhelmingException;
-import org.apache.cassandra.db.partitions.*;
-import org.apache.cassandra.db.rows.RowIterator;
-import org.apache.cassandra.db.view.ViewUtils;
-import org.apache.cassandra.dht.*;
-import org.apache.cassandra.exceptions.*;
-import org.apache.cassandra.gms.FailureDetector;
-import org.apache.cassandra.gms.Gossiper;
-import org.apache.cassandra.hints.Hint;
-import org.apache.cassandra.hints.HintsService;
-import org.apache.cassandra.index.Index;
-import org.apache.cassandra.io.util.DataOutputBuffer;
-import org.apache.cassandra.locator.*;
-import org.apache.cassandra.metrics.*;
-import org.apache.cassandra.net.*;
-import org.apache.cassandra.service.paxos.Commit;
-import org.apache.cassandra.service.paxos.PaxosState;
-import org.apache.cassandra.service.paxos.PrepareCallback;
-import org.apache.cassandra.service.paxos.ProposeCallback;
-import org.apache.cassandra.net.MessagingService.Verb;
-import org.apache.cassandra.tracing.Tracing;
-import org.apache.cassandra.triggers.TriggerExecutor;
-import org.apache.cassandra.utils.*;
-import org.apache.cassandra.utils.AbstractIterator;
+import java.util.stream.Collectors;
 
 public class StorageProxy implements StorageProxyMBean
 {
@@ -2047,6 +2048,34 @@ public class StorageProxy implements StorageProxyMBean
         return liveEndpoints;
     }
 
+    public static List<InetAddress> getLiveSortedEndpointsWithRangeModeApplied(Keyspace keyspace, RingPosition pos, ConsistencyLevel consistency)
+    { 
+        ERangeSliceQueryMode queryMode = Optional.ofNullable(AccessControlConfig.Loader.getCurrentConfig())
+                .map(c -> c.getSelectedRangeSliceQueryMode()
+                        .applyConsistency(consistency))
+                .orElse(ERangeSliceQueryMode.None);
+
+        String localDc = DatabaseDescriptor.getLocalDataCenter();
+        List<InetAddress> liveEndpoints;
+        switch (queryMode) {
+            case LocalNode:
+                liveEndpoints = new ArrayList<>(Collections.singleton(FBUtilities.getBroadcastAddress()));
+                break;
+            case LocalDC:
+                liveEndpoints = StorageService.instance.getLiveNaturalEndpoints(keyspace, pos)
+                        .stream()
+                        .filter(t -> Objects.equals(DatabaseDescriptor.getEndpointSnitch().getDatacenter(t), localDc))
+                        .collect(Collectors.toList());
+                break;
+            default:
+                liveEndpoints = StorageService.instance.getLiveNaturalEndpoints(keyspace, pos);
+                break;
+        }
+
+        DatabaseDescriptor.getEndpointSnitch().sortByProximity(FBUtilities.getBroadcastAddress(), liveEndpoints);
+        return liveEndpoints;
+    }
+
     private static List<InetAddress> intersection(List<InetAddress> l1, List<InetAddress> l2)
     {
         // Note: we don't use Guava Sets.intersection() for 3 reasons:
@@ -2132,7 +2161,7 @@ public class StorageProxy implements StorageProxyMBean
                 return endOfData();
 
             AbstractBounds<PartitionPosition> range = ranges.next();
-            List<InetAddress> liveEndpoints = getLiveSortedEndpoints(keyspace, range.right);
+            List<InetAddress> liveEndpoints = getLiveSortedEndpointsWithRangeModeApplied(keyspace, range.right, this.consistency);
             return new RangeForQuery(range,
                                      liveEndpoints,
                                      consistency.filterForQuery(keyspace, liveEndpoints),

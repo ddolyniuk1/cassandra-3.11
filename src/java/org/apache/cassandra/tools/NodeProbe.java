@@ -17,30 +17,38 @@
  */
 package org.apache.cassandra.tools;
 
-import java.io.IOException;
-import java.io.PrintStream;
-import java.lang.management.ManagementFactory;
-import java.lang.management.MemoryMXBean;
-import java.lang.management.MemoryUsage;
-import java.lang.management.RuntimeMXBean;
-import java.net.InetAddress;
-import java.net.UnknownHostException;
-import java.rmi.ConnectException;
-import java.rmi.server.RMIClientSocketFactory;
-import java.rmi.server.RMISocketFactory;
-import java.util.AbstractMap;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Comparator;
-import java.util.HashMap;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
-import java.util.Map.Entry;
-import java.util.Set;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
+import com.google.common.base.Function;
+import com.google.common.base.Strings;
+import com.google.common.collect.Iterables;
+import com.google.common.collect.Maps;
+import com.google.common.collect.Multimap;
+import com.google.common.collect.Sets;
+import com.google.common.util.concurrent.Uninterruptibles;
+import org.apache.cassandra.batchlog.BatchlogManager;
+import org.apache.cassandra.batchlog.BatchlogManagerMBean;
+import org.apache.cassandra.db.ColumnFamilyStoreMBean;
+import org.apache.cassandra.db.HintedHandOffManager;
+import org.apache.cassandra.db.HintedHandOffManagerMBean;
+import org.apache.cassandra.db.compaction.CompactionManager;
+import org.apache.cassandra.db.compaction.CompactionManagerMBean;
+import org.apache.cassandra.gms.FailureDetector;
+import org.apache.cassandra.gms.FailureDetectorMBean;
+import org.apache.cassandra.gms.Gossiper;
+import org.apache.cassandra.gms.GossiperMBean;
+import org.apache.cassandra.locator.DynamicEndpointSnitchMBean;
+import org.apache.cassandra.locator.EndpointSnitchInfoMBean;
+import org.apache.cassandra.metrics.CassandraMetricsRegistry;
+import org.apache.cassandra.metrics.StorageMetrics;
+import org.apache.cassandra.metrics.TableMetrics;
+import org.apache.cassandra.metrics.TableMetrics.Sampler;
+import org.apache.cassandra.metrics.ThreadPoolMetrics;
+import org.apache.cassandra.net.MessagingService;
+import org.apache.cassandra.net.MessagingServiceMBean;
+import org.apache.cassandra.service.*;
+import org.apache.cassandra.streaming.StreamManagerMBean;
+import org.apache.cassandra.streaming.StreamState;
+import org.apache.cassandra.streaming.management.StreamStateCompositeData;
+import org.apache.cassandra.tools.nodetool.GetTimeout;
 
 import javax.management.JMX;
 import javax.management.MBeanServerConnection;
@@ -53,47 +61,22 @@ import javax.management.remote.JMXConnector;
 import javax.management.remote.JMXConnectorFactory;
 import javax.management.remote.JMXServiceURL;
 import javax.rmi.ssl.SslRMIClientSocketFactory;
-
-import org.apache.cassandra.batchlog.BatchlogManager;
-import org.apache.cassandra.batchlog.BatchlogManagerMBean;
-import org.apache.cassandra.db.ColumnFamilyStoreMBean;
-import org.apache.cassandra.db.HintedHandOffManagerMBean;
-import org.apache.cassandra.db.compaction.CompactionManager;
-import org.apache.cassandra.db.compaction.CompactionManagerMBean;
-import org.apache.cassandra.gms.FailureDetector;
-import org.apache.cassandra.gms.FailureDetectorMBean;
-import org.apache.cassandra.gms.Gossiper;
-import org.apache.cassandra.gms.GossiperMBean;
-import org.apache.cassandra.db.HintedHandOffManager;
-import org.apache.cassandra.locator.DynamicEndpointSnitchMBean;
-import org.apache.cassandra.locator.EndpointSnitchInfoMBean;
-import org.apache.cassandra.metrics.CassandraMetricsRegistry;
-import org.apache.cassandra.metrics.TableMetrics.Sampler;
-import org.apache.cassandra.metrics.StorageMetrics;
-import org.apache.cassandra.metrics.TableMetrics;
-import org.apache.cassandra.metrics.ThreadPoolMetrics;
-import org.apache.cassandra.net.MessagingService;
-import org.apache.cassandra.net.MessagingServiceMBean;
-import org.apache.cassandra.schema.CompactionParams.TombstoneOption;
-import org.apache.cassandra.service.CacheService;
-import org.apache.cassandra.service.CacheServiceMBean;
-import org.apache.cassandra.service.GCInspector;
-import org.apache.cassandra.service.GCInspectorMXBean;
-import org.apache.cassandra.service.StorageProxy;
-import org.apache.cassandra.service.StorageProxyMBean;
-import org.apache.cassandra.service.StorageServiceMBean;
-import org.apache.cassandra.streaming.StreamManagerMBean;
-import org.apache.cassandra.streaming.StreamState;
-import org.apache.cassandra.streaming.management.StreamStateCompositeData;
-
-import com.google.common.base.Function;
-import com.google.common.base.Strings;
-import com.google.common.collect.Iterables;
-import com.google.common.collect.Maps;
-import com.google.common.collect.Multimap;
-import com.google.common.collect.Sets;
-import com.google.common.util.concurrent.Uninterruptibles;
-import org.apache.cassandra.tools.nodetool.GetTimeout;
+import java.io.IOException;
+import java.io.PrintStream;
+import java.lang.management.ManagementFactory;
+import java.lang.management.MemoryMXBean;
+import java.lang.management.MemoryUsage;
+import java.lang.management.RuntimeMXBean;
+import java.net.InetAddress;
+import java.net.UnknownHostException;
+import java.rmi.ConnectException;
+import java.rmi.server.RMIClientSocketFactory;
+import java.rmi.server.RMISocketFactory;
+import java.util.*;
+import java.util.Map.Entry;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * JMX client operations for Cassandra.
@@ -206,8 +189,8 @@ public class NodeProbe implements AutoCloseable
 
         env.put("com.sun.jndi.rmi.factory.socket", getRMIClientSocketFactory());
 
-        jmxc = JMXConnectorFactory.connect(jmxUrl, env);
-        mbeanServerConn = jmxc.getMBeanServerConnection();
+        setJmxc(JMXConnectorFactory.connect(jmxUrl, env));
+        mbeanServerConn = getJmxc().getMBeanServerConnection();
 
         try
         {
@@ -258,7 +241,7 @@ public class NodeProbe implements AutoCloseable
     {
         try
         {
-            jmxc.close();
+            getJmxc().close();
         }
         catch (ConnectException e)
         {
@@ -372,7 +355,11 @@ public class NodeProbe implements AutoCloseable
                 break;
         }
     }
-
+    
+    public void forceCDCFlush() throws IOException
+    {
+        ssProxy.forceCDCFlush();
+    }
     public void garbageCollect(PrintStream out, String tombstoneOption, int jobs, String keyspaceName, String... tableNames) throws IOException, ExecutionException, InterruptedException
     {
         if (garbageCollect(tombstoneOption, jobs, keyspaceName, tableNames) != 0)
@@ -420,8 +407,8 @@ public class NodeProbe implements AutoCloseable
         RepairRunner runner = new RepairRunner(out, ssProxy, keyspace, options);
         try
         {
-            if (jmxc != null)
-                jmxc.addConnectionNotificationListener(runner, null, null);
+            if (getJmxc() != null)
+                getJmxc().addConnectionNotificationListener(runner, null, null);
             ssProxy.addNotificationListener(runner, null, null);
             runner.run();
         }
@@ -434,8 +421,8 @@ public class NodeProbe implements AutoCloseable
             try
             {
                 ssProxy.removeNotificationListener(runner);
-                if (jmxc != null)
-                    jmxc.removeConnectionNotificationListener(runner);
+                if (getJmxc() != null)
+                    getJmxc().removeConnectionNotificationListener(runner);
             }
             catch (Throwable e)
             {
@@ -1541,8 +1528,8 @@ public class NodeProbe implements AutoCloseable
         BootstrapMonitor monitor = new BootstrapMonitor(out);
         try
         {
-            if (jmxc != null)
-                jmxc.addConnectionNotificationListener(monitor, null, null);
+            if (getJmxc() != null)
+                getJmxc().addConnectionNotificationListener(monitor, null, null);
             ssProxy.addNotificationListener(monitor, null, null);
             if (ssProxy.resumeBootstrap())
             {
@@ -1563,8 +1550,8 @@ public class NodeProbe implements AutoCloseable
             try
             {
                 ssProxy.removeNotificationListener(monitor);
-                if (jmxc != null)
-                    jmxc.removeConnectionNotificationListener(monitor);
+                if (getJmxc() != null)
+                    getJmxc().removeConnectionNotificationListener(monitor);
             }
             catch (Throwable e)
             {
@@ -1595,6 +1582,20 @@ public class NodeProbe implements AutoCloseable
         {
             throw new RuntimeException(e);
         }
+    }
+
+
+    public void reloadSslCerts() throws IOException
+    {
+        msProxy.reloadSslCertificates();
+    }
+
+    public JMXConnector getJmxc() {
+        return jmxc;
+    }
+
+    public void setJmxc(JMXConnector jmxc) {
+        this.jmxc = jmxc;
     }
 }
 

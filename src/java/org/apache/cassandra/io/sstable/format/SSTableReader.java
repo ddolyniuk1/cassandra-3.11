@@ -19,6 +19,7 @@ package org.apache.cassandra.io.sstable.format;
 
 import java.io.*;
 import java.lang.ref.WeakReference;
+import java.lang.StringBuilder;
 import java.nio.ByteBuffer;
 import java.util.*;
 import java.util.concurrent.*;
@@ -1812,21 +1813,83 @@ public abstract class SSTableReader extends SSTable implements SelfRefCounted<SS
         return maxDataAge > age;
     }
 
-    public void createLinks(String snapshotDirectoryPath)
+    public String createLinks(String snapshotDirectoryPath)
     {
-        createLinks(descriptor, components, snapshotDirectoryPath);
+        return createLinks(descriptor, components, snapshotDirectoryPath);
     }
 
-    public static void createLinks(Descriptor descriptor, Set<Component> components, String snapshotDirectoryPath)
+    public static String createLinks(Descriptor descriptor, Set<Component> components, String snapshotDirectoryPath)
     {
+        return createLinksManifest(descriptor, components, snapshotDirectoryPath);
+    }
+
+    private static String createLinksManifest(Descriptor descriptor, Set<Component> components, String snapshotDirectoryPath)
+    {
+        java.io.File snapshotHardLinkManifestFile = new java.io.File(snapshotDirectoryPath, "manifest.edge");
+
+        if (snapshotHardLinkManifestFile.exists())
+        {
+            logger.info("Snapshot manifest file '{}' already exists, overwriting", snapshotHardLinkManifestFile.getAbsolutePath());
+        }
+
+        StringBuilder snapshotHardLinkManifestFileContentsBuilder = new StringBuilder();
+
+        int requiredHardLinkCount = 0;
         for (Component component : components)
         {
-            File sourceFile = new File(descriptor.filenameFor(component));
+            String componentFileName = descriptor.filenameFor(component);
+            File sourceFile = new File(componentFileName);
             if (!sourceFile.exists())
                 continue;
-            File targetLink = new File(snapshotDirectoryPath, sourceFile.getName());
-            FileUtils.createHardLink(sourceFile, targetLink);
+
+            java.io.File targetLink = new java.io.File(snapshotDirectoryPath, sourceFile.getName());
+
+            snapshotHardLinkManifestFileContentsBuilder.append(componentFileName + "\n");
+            snapshotHardLinkManifestFileContentsBuilder.append(targetLink.getAbsolutePath() + "\n");
+
+            requiredHardLinkCount++;
         }
+
+        snapshotHardLinkManifestFileContentsBuilder.append(requiredHardLinkCount);
+
+        try(BufferedWriter snapshotHardLinkManifestFileWriter = new BufferedWriter(new FileWriter(snapshotHardLinkManifestFile, false)))
+        {
+            snapshotHardLinkManifestFileWriter.write(snapshotHardLinkManifestFileContentsBuilder.toString());
+            snapshotHardLinkManifestFileWriter.flush();
+            snapshotHardLinkManifestFileWriter.close();
+
+            logger.info("Successfully generated snapshot manifest file '{}'", snapshotHardLinkManifestFile.getAbsolutePath());
+        }
+        catch (IOException ex)
+        {
+            logger.error("Failed to generate snapshot manifest file '{}'", snapshotHardLinkManifestFile.getAbsolutePath(), ex);
+
+            return null;
+        }
+
+        java.time.Instant startTime = java.time.Instant.now();
+        while (snapshotHardLinkManifestFile.exists() && java.time.Duration.between(startTime, java.time.Instant.now()).getSeconds() <= 10)
+        {
+            try
+            {
+                java.lang.Thread.sleep(10);
+            }
+            catch (java.lang.InterruptedException ex)
+            {
+                logger.warn("Failed to sleep while waiting for external hard-link creation for '{}'", snapshotHardLinkManifestFile.getAbsolutePath(), ex);
+
+                return null;
+            }
+        }
+
+        if (snapshotHardLinkManifestFile.exists())
+        {
+            logger.warn("The manifest file '{}' still exists, external hard-links may not be properly created, not snapshotting", snapshotHardLinkManifestFile.getAbsolutePath());
+
+            return null;
+        }
+
+        return snapshotHardLinkManifestFile.getAbsolutePath();
     }
 
     public boolean isRepaired()

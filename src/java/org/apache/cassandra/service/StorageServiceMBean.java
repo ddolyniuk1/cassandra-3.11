@@ -17,6 +17,8 @@
  */
 package org.apache.cassandra.service;
 
+import javax.management.NotificationEmitter;
+import javax.management.openmbean.TabularData;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
@@ -27,9 +29,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeoutException;
-
-import javax.management.NotificationEmitter;
-import javax.management.openmbean.TabularData;
 
 public interface StorageServiceMBean extends NotificationEmitter
 {
@@ -392,7 +391,7 @@ public interface StorageServiceMBean extends NotificationEmitter
     public int forceRepairRangeAsync(String beginToken, String endToken, String keyspaceName, boolean isSequential, boolean isLocal, boolean fullRepair, String... tableNames);
 
     public void forceTerminateAllRepairSessions();
-
+    public void forceCDCFlush();
     public void setRepairSessionMaxTreeDepth(int depth);
 
     public int getRepairSessionMaxTreeDepth();

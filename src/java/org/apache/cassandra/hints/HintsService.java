@@ -17,36 +17,35 @@
  */
 package org.apache.cassandra.hints;
 
-import java.io.File;
-import java.net.InetAddress;
-import java.net.UnknownHostException;
-import java.util.Collections;
-import java.util.Objects;
-import java.util.UUID;
-import java.util.concurrent.*;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.function.Supplier;
-
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableMap;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import org.apache.cassandra.concurrent.ScheduledExecutors;
+import org.apache.cassandra.config.AccessControlConfig;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.config.ParameterizedClass;
+import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.gms.FailureDetector;
 import org.apache.cassandra.gms.IFailureDetector;
 import org.apache.cassandra.metrics.HintedHandoffMetrics;
 import org.apache.cassandra.metrics.StorageMetrics;
-import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.service.StorageProxy;
 import org.apache.cassandra.service.StorageService;
 import org.apache.cassandra.utils.MBeanWrapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-import static com.google.common.collect.Iterables.filter;
-import static com.google.common.collect.Iterables.transform;
-import static com.google.common.collect.Iterables.size;
+import java.io.File;
+import java.net.InetAddress;
+import java.net.UnknownHostException;
+import java.util.*;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Future;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Supplier;
+
+import static com.google.common.collect.Iterables.*;
 
 /**
  * A singleton-ish wrapper over various hints components:
@@ -146,12 +145,25 @@ public final class HintsService implements HintsServiceMBean
         if (isShutDown)
             throw new IllegalStateException("HintsService is shut down and can't accept new hints");
 
-        // we have to make sure that the HintsStore instances get properly initialized - otherwise dispatch will not trigger
-        catalog.maybeLoadStores(hostIds);
+        List<UUID> filteredHostIds = new ArrayList<>(); ;
 
-        bufferPool.write(hostIds, hint);
+        AccessControlConfig accessControlConfig = AccessControlConfig.Loader.getCurrentConfig();
+        for(UUID uuid : hostIds) {
+            InetAddress address = StorageService.instance.getEndpointForHostId(uuid);
+            if(accessControlConfig.isAddressAccessible(address)) {
+                filteredHostIds.add(uuid);
+            }
+        }
 
-        StorageMetrics.totalHints.inc(size(hostIds));
+        if (!filteredHostIds.isEmpty())
+        {
+            // we have to make sure that the HintsStore instances get properly initialized - otherwise dispatch will not trigger
+            catalog.maybeLoadStores(filteredHostIds);
+
+            bufferPool.write(filteredHostIds, hint);
+
+            StorageMetrics.totalHints.inc(size(filteredHostIds));
+        }
     }
 
     /**

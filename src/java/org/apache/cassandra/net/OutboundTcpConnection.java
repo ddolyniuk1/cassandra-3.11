@@ -17,6 +17,30 @@
  */
 package org.apache.cassandra.net;
 
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.util.concurrent.Uninterruptibles;
+import io.netty.util.concurrent.FastThreadLocalThread;
+import net.jpountz.lz4.LZ4BlockOutputStream;
+import net.jpountz.lz4.LZ4Compressor;
+import net.jpountz.lz4.LZ4Factory;
+import net.jpountz.xxhash.XXHashFactory;
+import org.apache.cassandra.concurrent.NamedThreadFactory;
+import org.apache.cassandra.config.AccessControlConfig;
+import org.apache.cassandra.config.Config;
+import org.apache.cassandra.config.DatabaseDescriptor;
+import org.apache.cassandra.io.util.BufferedDataOutputStreamPlus;
+import org.apache.cassandra.io.util.DataOutputStreamPlus;
+import org.apache.cassandra.io.util.WrappedDataOutputStreamPlus;
+import org.apache.cassandra.tracing.TraceState;
+import org.apache.cassandra.tracing.Tracing;
+import org.apache.cassandra.utils.*;
+import org.apache.cassandra.utils.CoalescingStrategies.Coalescable;
+import org.apache.cassandra.utils.CoalescingStrategies.CoalescingStrategy;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.xerial.snappy.SnappyOutputStream;
+
+import javax.net.ssl.SSLHandshakeException;
 import java.io.DataInputStream;
 import java.io.DataOutput;
 import java.io.IOException;
@@ -26,7 +50,10 @@ import java.net.SocketException;
 import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
 import java.nio.channels.WritableByteChannel;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.List;
+import java.util.UUID;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -35,37 +62,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.zip.Checksum;
-
-import javax.net.ssl.SSLHandshakeException;
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-import io.netty.util.concurrent.FastThreadLocalThread;
-import net.jpountz.lz4.LZ4BlockOutputStream;
-import net.jpountz.lz4.LZ4Compressor;
-import net.jpountz.lz4.LZ4Factory;
-import net.jpountz.xxhash.XXHashFactory;
-
-import org.apache.cassandra.concurrent.NamedThreadFactory;
-import org.apache.cassandra.io.util.DataOutputStreamPlus;
-import org.apache.cassandra.io.util.BufferedDataOutputStreamPlus;
-import org.apache.cassandra.io.util.WrappedDataOutputStreamPlus;
-import org.apache.cassandra.tracing.TraceState;
-import org.apache.cassandra.tracing.Tracing;
-import org.apache.cassandra.utils.CoalescingStrategies;
-import org.apache.cassandra.utils.CoalescingStrategies.Coalescable;
-import org.apache.cassandra.utils.CoalescingStrategies.CoalescingStrategy;
-import org.apache.cassandra.utils.FBUtilities;
-import org.apache.cassandra.utils.JVMStabilityInspector;
-import org.apache.cassandra.utils.NanoTimeToCurrentTimeMillis;
-import org.apache.cassandra.utils.UUIDGen;
-import org.xerial.snappy.SnappyOutputStream;
-import org.apache.cassandra.config.Config;
-import org.apache.cassandra.config.DatabaseDescriptor;
-
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.util.concurrent.Uninterruptibles;
 
 public class OutboundTcpConnection extends FastThreadLocalThread
 {
@@ -164,7 +160,7 @@ public class OutboundTcpConnection extends FastThreadLocalThread
         // unless it has been gossiped to us or it has connected to us and in both case this sets the version) and
         // in that case we won't rely on that targetVersion before we're actually connected and so the version
         // detection in connect() will do its job.
-        targetVersion = MessagingService.instance().getVersion(pool.endPoint());
+        targetVersion = MessagingService.instance().getVersion(pool.endPoint()); 
     }
 
     private static boolean isLocalDC(InetAddress targetHost)
@@ -313,6 +309,16 @@ public class OutboundTcpConnection extends FastThreadLocalThread
     {
         try
         {
+            InetAddress endPoint = poolReference.endPoint();
+            AccessControlConfig config = AccessControlConfig.Loader.getCurrentConfig();
+            if(config != null) 
+            {
+                if(!config.isAddressAccessible(endPoint)) 
+                {
+                    throw new IOException();
+                }
+            }
+            
             byte[] sessionBytes = qm.message.parameters.get(Tracing.TRACE_HEADER);
             if (sessionBytes != null)
             {
@@ -431,6 +437,13 @@ public class OutboundTcpConnection extends FastThreadLocalThread
             targetVersion = MessagingService.instance().getVersion(poolReference.endPoint());
             try
             {
+                InetAddress endPoint = poolReference.endPoint();
+                AccessControlConfig config = AccessControlConfig.Loader.getCurrentConfig();
+                if(!config.isAddressAccessible(endPoint)) 
+                {
+                    throw new IOException(); // indicate the endpoint is unreachable
+                }
+                
                 socket = poolReference.newSocket();
                 socket.setKeepAlive(true);
                 if (isLocalDC(poolReference.endPoint()))

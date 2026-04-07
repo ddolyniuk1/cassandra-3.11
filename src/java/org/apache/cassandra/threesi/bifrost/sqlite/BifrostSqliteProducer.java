@@ -69,11 +69,6 @@ public class BifrostSqliteProducer implements IBifrostProducer {
                         byte[] serialized = serializeMutation(mutation);
                         String hash = calculateMutationHash(serialized, mutation, pu);
 
-                        if (Boolean.TRUE.equals(
-                                BifrostImporterService.getInstance()
-                                        .getIsRecentlyProcessedMutation(hash)))
-                            continue;
-
                         stmt.setString(1, mutation.getKeyspaceName());
                         stmt.setString(2, pu.metadata().cfName);
                         stmt.setString(3, determineOperation(pu));

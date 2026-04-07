@@ -72,8 +72,6 @@ public class BifrostSqliteConsumer implements IBifrostConsumer {
                             continue;
                         }
 
-                        BifrostImporterService.getInstance()
-                                .setIsRecentlyProcessedMutation(mutationHash);
                         applyMutation(mutation);
 
                         deleteStmt.setLong(1, eventId);
@@ -136,6 +134,7 @@ public class BifrostSqliteConsumer implements IBifrostConsumer {
     }
 
     private void applyMutation(Mutation mutation) throws WriteTimeoutException, WriteFailureException, OverloadedException {
+        mutation.setFromHub(true);
         StorageProxy.mutate(
                 Collections.singletonList(mutation),
                 ConsistencyLevel.LOCAL_ONE,
@@ -169,7 +168,7 @@ public class BifrostSqliteConsumer implements IBifrostConsumer {
     private String buildSelectQuery(String keyspaceFilter, String tableFilter, int limit) {
         StringBuilder qb = new StringBuilder(
                 "SELECT id, keyspace, table_name, operation, data, mutation_hash " +
-                        "FROM cdc_events WHERE processed != 1"
+                        "FROM cdc_events"
         );
 
         if (keyspaceFilter != null && !keyspaceFilter.trim().isEmpty())

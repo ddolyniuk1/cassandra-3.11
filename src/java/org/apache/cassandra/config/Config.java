@@ -412,7 +412,7 @@ public class Config
 
     public Boolean bifrost_enabled = false;
 
-    public String bifrost_monitored_keyspaces_csv = "identity_service_keyspace";
+    public String bifrost_monitored_keyspaces_csv = "identity_service_keyspace,global_1_0_1";
 
     public String bifrost_node_id = "";
     /**

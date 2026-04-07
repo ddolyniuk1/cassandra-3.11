@@ -17,16 +17,6 @@
  */
 package org.apache.cassandra.db;
 
-import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.util.*;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.atomic.AtomicLong;
-
-import com.google.common.base.Throwables;
-import com.google.common.util.concurrent.Uninterruptibles;
-import org.apache.commons.lang3.StringUtils;
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.config.Schema;
@@ -38,13 +28,20 @@ import org.apache.cassandra.io.util.DataOutputPlus;
 import org.apache.cassandra.net.MessageOut;
 import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.utils.ByteBufferUtil;
+import org.apache.commons.lang3.StringUtils;
+
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicLong;
 
 // TODO convert this to a Builder pattern instead of encouraging M.add directly,
 // which is less-efficient since we have to keep a mutable HashMap around
 public class Mutation implements IMutation
 {
     public static final MutationSerializer serializer = new MutationSerializer();
-
+    private boolean fromHub = false;
     public static final String FORWARD_TO = "FWD_TO";
     public static final String FORWARD_FROM = "FWD_FRM";
 
@@ -97,6 +94,14 @@ public class Mutation implements IMutation
         this.createdAt = createdAt;
     }
 
+    public boolean isFromHub() {
+        return fromHub;
+    }
+
+    public Mutation setFromHub(boolean fromHub) {
+        this.fromHub = fromHub;
+        return this;
+    }
     private static boolean cdcEnabled(Map<UUID, PartitionUpdate> modifications)
     {
         boolean cdcEnabled = false;
@@ -414,6 +419,9 @@ public class Mutation implements IMutation
             assert size > 0;
             for (Map.Entry<UUID, PartitionUpdate> entry : mutation.modifications.entrySet())
                 PartitionUpdate.serializer.serialize(entry.getValue(), out, version);
+            
+            if(version >= MessagingService.VERSION_3014_CUSTOM)
+                out.writeBoolean(mutation.fromHub);
         }
 
         public Mutation deserialize(DataInputPlus in, int version, SerializationHelper.Flag flag) throws IOException
@@ -449,7 +457,11 @@ public class Mutation implements IMutation
                 modifications.put(update.metadata().cfId, update);
             }
 
-            return new Mutation(update.metadata().ksName, dk, modifications);
+            Mutation mutation = new Mutation(update.metadata().ksName, dk, modifications);
+            
+            if(version >= MessagingService.VERSION_3014_CUSTOM)
+                mutation.setFromHub(in.readBoolean());
+            return mutation;
         }
 
         public Mutation deserialize(DataInputPlus in, int version) throws IOException
@@ -478,6 +490,9 @@ public class Mutation implements IMutation
             for (Map.Entry<UUID, PartitionUpdate> entry : mutation.modifications.entrySet())
                 size += PartitionUpdate.serializer.serializedSize(entry.getValue(), version);
 
+            if(version >= MessagingService.VERSION_3014_CUSTOM)
+                size += 1;
+            
             return size;
         }
     }

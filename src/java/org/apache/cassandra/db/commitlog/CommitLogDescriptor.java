@@ -20,11 +20,16 @@
  */
 package org.apache.cassandra.db.commitlog;
 
-import java.io.DataInput;
-import java.io.EOFException;
-import java.io.File;
-import java.io.IOException;
-import java.io.RandomAccessFile;
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Objects;
+import org.apache.cassandra.config.ParameterizedClass;
+import org.apache.cassandra.exceptions.ConfigurationException;
+import org.apache.cassandra.io.FSReadError;
+import org.apache.cassandra.net.MessagingService;
+import org.apache.cassandra.security.EncryptionContext;
+import org.json.simple.JSONValue;
+
+import java.io.*;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.Collections;
@@ -33,16 +38,6 @@ import java.util.TreeMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.zip.CRC32;
-
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Objects;
-
-import org.apache.cassandra.config.ParameterizedClass;
-import org.apache.cassandra.exceptions.ConfigurationException;
-import org.apache.cassandra.io.FSReadError;
-import org.apache.cassandra.net.MessagingService;
-import org.apache.cassandra.security.EncryptionContext;
-import org.json.simple.JSONValue;
 
 import static org.apache.cassandra.utils.FBUtilities.updateChecksumInt;
 
@@ -222,7 +217,7 @@ public class CommitLogDescriptor
             case VERSION_22:
                 return MessagingService.VERSION_22;
             case VERSION_30:
-                return MessagingService.FORCE_3_0_PROTOCOL_VERSION ? MessagingService.VERSION_30 : MessagingService.VERSION_3014;
+                return MessagingService.FORCE_3_0_PROTOCOL_VERSION ? MessagingService.VERSION_30 : MessagingService.VERSION_3014_CUSTOM;
             default:
                 throw new IllegalStateException("Unknown commitlog version " + version);
         }

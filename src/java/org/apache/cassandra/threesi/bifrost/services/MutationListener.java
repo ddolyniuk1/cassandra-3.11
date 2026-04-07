@@ -44,6 +44,7 @@ public class MutationListener
     public void onMutation(Mutation mutation)
     {
         if (!enabled) return;
+        if(mutation.isFromHub()) return;
         if (!DatabaseDescriptor.isBifrostMonitoredKeyspace(mutation.getKeyspaceName()))
             return;
 

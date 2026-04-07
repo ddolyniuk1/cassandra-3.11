@@ -17,12 +17,6 @@ public class BifrostImporterService implements BifrostImporterServiceMBean {
     
     private final BifrostConsumerFacade bifrostConsumerFacade = new BifrostConsumerFacade();
     
-    // our cache of mutation hashes we previously imported
-    private final Cache<String, Boolean> recentlyProcessedMutationsCache = CacheBuilder.newBuilder()
-            .maximumSize(200000)
-            .expireAfterWrite(1, TimeUnit.HOURS)
-            .build();
-    
     public static synchronized BifrostImporterService getInstance()
     {
         if (instance == null)
@@ -40,13 +34,5 @@ public class BifrostImporterService implements BifrostImporterServiceMBean {
     public int importMutations(String filePath, int limit, String keyspaceFilter, String tableFilter)
     {
         return bifrostConsumerFacade.importMutations(filePath, limit, keyspaceFilter, tableFilter);
-    }
-    
-    public void setIsRecentlyProcessedMutation(String mutationHash) {
-        recentlyProcessedMutationsCache.put(mutationHash, true);
-    }
-
-    public Boolean getIsRecentlyProcessedMutation(String mutationHash) {
-        return recentlyProcessedMutationsCache.getIfPresent(mutationHash);
     }
 }

@@ -94,7 +94,8 @@ public final class MessagingService implements MessagingServiceMBean
     public static final int VERSION_22 = 9;
     public static final int VERSION_30 = 10;
     public static final int VERSION_3014 = 11;
-    public static final int current_version = FORCE_3_0_PROTOCOL_VERSION ? VERSION_30 : VERSION_3014;
+    public static final int VERSION_3014_CUSTOM = 12;
+    public static final int current_version = FORCE_3_0_PROTOCOL_VERSION ? VERSION_30 : VERSION_3014_CUSTOM;
 
     public static final String FAILURE_CALLBACK_PARAM = "CAL_BAC";
     public static final byte[] ONE_BYTE = new byte[1];

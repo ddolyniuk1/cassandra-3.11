@@ -64,9 +64,6 @@ public class BifrostSqliteProducerCdc implements IBifrostProducerCdc {
         String mutationHash = calculateMutationHash(serializedMutationData, mutation, partitionUpdate);
         String keyspace = mutation.getKeyspaceName();
         
-        // if we imported this mutation, don't process it
-        if(Boolean.TRUE.equals(BifrostImporterService.getInstance().getIsRecentlyProcessedMutation(mutationHash))) return;
-        
         if(hostId == null) {
             hostId = resolveSourceNodeId();
         }
